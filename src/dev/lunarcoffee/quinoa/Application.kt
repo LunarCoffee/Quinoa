@@ -5,9 +5,9 @@ import io.ktor.application.*
 import io.ktor.features.*
 import io.ktor.gson.gson
 import io.ktor.response.respond
+import io.ktor.response.respondText
 import io.ktor.routing.*
 import io.ktor.server.netty.EngineMain
-import kotlinx.coroutines.runBlocking
 import org.litote.kmongo.coroutine.coroutine
 import org.litote.kmongo.eq
 import org.litote.kmongo.reactivestreams.KMongo
@@ -48,10 +48,18 @@ fun Application.module() {
     routing {
         route("/suggest") {
             get {
-                val action = call.request.queryParameters["action"]!!
+                val params = call.request.queryParameters
+
+                val action = params["action"] ?: return@get call.respondErrQP("action")
+                val by = params["by"]
+                    ?.ifEmpty { null }
+                    ?.run { timeToSlotIndex(LocalDateTime.parse(this, DateTimeFormatter.ISO_DATE_TIME)) }
+                val after = params["after"]
+                    ?.ifEmpty { null }
+                    ?.run { timeToSlotIndex(LocalDateTime.parse(this, DateTimeFormatter.ISO_DATE_TIME)) }
 
                 val tag = inferTagsByKeywords(action)
-                val startDate = inferStartDate(tag).format(DateTimeFormatter.ISO_DATE_TIME)
+                val startDate = inferStartDate(tag, by, after).format(DateTimeFormatter.ISO_DATE_TIME)
                 val length = inferLength(tag) * 5
                 val repeats = "none"
 
@@ -137,9 +145,9 @@ fun Application.module() {
     }
 }
 
-private suspend fun ApplicationCall.respondOk() = respond(PostResponse(true, ""))
+private suspend fun ApplicationCall.respondOk() = respondText("OK")
 private suspend fun ApplicationCall.respondErrQP(error: String) =
-    respond(PostResponse(false, "Missing `$error` query parameter"))
+    respondText("Missing `$error` query parameter")
 
 // ------------------------------------------------------------------------------------------------
 
@@ -160,14 +168,21 @@ private fun inferTagsByKeywords(action: String): String {
         ?: "task"
 }
 
-private suspend fun inferStartDate(tag: String): LocalDateTime {
+private suspend fun inferStartDate(tag: String, by: Int?, after: Int?): LocalDateTime {
     var time = LocalDateTime.now()
     withData { data ->
         val prob = data.monthProbability[tag]!!.flatten()
 
         val initial = prob.all { it == 0.5 }
-        val timeSlot = if (initial) Random.nextInt(3) * 3 else prob.indexOf(prob.max()) + Random.nextInt(-2, 3)
-        time = slotToTime(data.monthSchedule.flatten()[timeSlot])
+        val s = prob.slice((after ?: 0)..(by ?: (after ?: 0) + 2016))
+        val timeSlot = (after ?: 0) + if (initial)
+            6 + Random.nextInt(3) * 3
+        else
+            s.indexOf(s.withIndex().maxBy { (i, p) -> if (i in data.recentIndices) -1.0 else p }!!.value)
+
+        val slot = timeSlot.coerceIn(prob.indices)
+        data.recentIndices = data.recentIndices.drop(3) + listOf(slot - 1, slot, slot + 1)
+        time = slotToTime(data.monthSchedule.flatten()[slot])
 
         data
     }
@@ -176,8 +191,8 @@ private suspend fun inferStartDate(tag: String): LocalDateTime {
 
 private fun adjustProbability(prob: List<ProbabilityTimeSlot>, index: Int, high: Boolean): List<ProbabilityTimeSlot> {
     val modifyFunc = { x: Double, d: Int ->
-        val updated = if (if (high) d > 5 else d <= 5) x - 0.0016 * (d - 5) * (d - 5) else x + 0.015 * (5 - d) * (4 - d)
-        updated.coerceIn((x - 0.3).coerceAtLeast(0.0), (x + 0.27).coerceAtMost(1.0))
+        val updated = (x + (if (high) 1.0 else -1.0) / (d + 3)).coerceAtLeast(0.0)
+        updated.coerceIn((x - 0.3).coerceAtLeast(0.0), (x + 0.3).coerceAtMost(1.0))
     }
 
     val newProb = prob.toMutableList()
@@ -223,7 +238,8 @@ private suspend fun withData(op: (UserData) -> UserData) {
                     "school" to 6,
                     "leisure" to 6,
                     "task" to 6
-                )
+                ),
+                List(9) { 0 }
             )
             dataCol.insertOne(data)
             data
@@ -236,8 +252,9 @@ private fun slotToTime(slot: EventTimeSlot): LocalDateTime {
     val mins = slot.minutesSince
     return LocalDateTime
         .now()
-        .withDayOfMonth(6 + mins / 1440)
-        .withHour(7 + mins / 60 % 24)
+        .withDayOfYear(158 + mins / 1440)
+        .withHour(mins / 60 % 24)
+        .plusHours(7)
         .withMinute(mins % 60)
         .withSecond(0)
         .withNano(0)

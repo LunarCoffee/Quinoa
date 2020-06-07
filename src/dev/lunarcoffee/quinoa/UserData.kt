@@ -5,7 +5,7 @@ import com.google.gson.annotations.SerializedName
 data class ScheduledEvent(
     val action: String,
     val tag: String,
-    @SerializedName("start_time") val startTime: String,
+    @SerializedName("start_date") val startTime: String,
     val length: Int,
     val repeats: String
 )
@@ -15,8 +15,6 @@ data class EventTimeSlot(val event: ScheduledEvent?, val which: Int) {
     val minutesSince = which * 5
 }
 
-// Initially, `chance` will be 0.0 for all slots. As events are scheduled, the values will distribute themselves. They
-// should always be between 0.0 and 1.0.
 typealias ProbabilityTimeSlot = Double
 
 // These should contain 288 elements.
@@ -28,7 +26,10 @@ data class UserData(
     val monthSchedule: List<DaySchedule>,
     val monthProbability: MutableMap<String, List<DayProbability>>,
 
-    val subjectAvgLength: MutableMap<String, Int>
+    val subjectAvgLength: MutableMap<String, Int>,
+
+    // List of 3 elements to prevent duplicates after an intermediate suggestion.
+    var recentIndices: List<Int>
 ) {
     val id = 0
 }
